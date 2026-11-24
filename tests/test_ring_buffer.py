@@ -5,7 +5,7 @@ import time
 import unittest
 
 from synergy_agent_long_term_memory.ring_buffer import (
-    AgentRingBuffer, BufferClosedError, BufferFullError,
+    AgentRingBuffer, BufferClosedError, BufferEmptyError, BufferFullError,
 )
 
 
@@ -30,9 +30,9 @@ class AgentRingBufferTests(unittest.TestCase):
 
     def test_timeout_and_empty_nonblocking(self):
         ring = AgentRingBuffer[int](1)
-        with self.assertRaises(BufferFullError):
+        with self.assertRaises(BufferEmptyError):
             ring.get(block=False)
-        with self.assertRaises(BufferFullError):
+        with self.assertRaises(BufferEmptyError):
             ring.get(timeout=0.001)
 
     def test_blocked_producer_resumes_after_consumer_drains(self):
