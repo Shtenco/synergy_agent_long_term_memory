@@ -35,13 +35,13 @@ Persistent mission orchestration primitives for long-running agents. This reposi
 - Long-Term Agent owns mission lifecycle, durable event journal, progress checkpoints, and recovery orchestration.
 - Hierarchical Cognitive Memory owns versioned System Core, trust-controlled semantic records, RAG, graph retrieval, provenance, and consolidation.
 - AI Coder owns repository worktrees, patches, command policy, test evidence, review contracts, and release candidates.
-- Ring Buffer owns bounded low-latency recent-event windows. It is not the durable source of truth.
+- Ring Buffer owns bounded low-latency recent-event windows. It is not the durable source of truth; a full buffer blocks or raises instead of silently overwriting unconsumed entries.
 
 The shared integration envelope should carry namespace, mission_id, agent_id, repository_id, task_id, event_id, sequence, memory_version, checkpoint_id, commit_sha, and evidence references. Unknown schema versions must be rejected.
 
 ## Security and correctness boundaries
 
-Namespace filtering is a data partition, not authentication or authorization. Authenticate callers and authorize namespace access at the service boundary. SHA-256 detects persisted-byte changes relative to the stored digest; it does not authenticate writers or prove claims. SQLite WAL is not a backup strategy. Do not expose the database or future API to an untrusted network.
+Namespace filtering is a data partition, not authentication or authorization. Authenticate callers and authorize namespace access at the service boundary. SHA-256 detects persisted-byte changes relative to the stored digest; it does not authenticate writers or prove claims. SQLite WAL is not a backup strategy. A MissionStore connection is thread-confined; use one connection per thread/process and rely on SQLite transactions for cross-connection writer serialization. Do not expose the database or future API to an untrusted network.
 
 This is a first durable-runtime milestone, not a complete autonomous agent. No model provider, task DAG scheduler, retry engine, subagent executor, ring buffer, or cross-repository transaction coordinator is claimed as implemented.
 
