@@ -76,8 +76,9 @@ class AgentRingBuffer(Generic[T]):
             self._condition.notify_all()
 
     def get(self, *, block: bool = True, timeout: float | None = None) -> T:
-        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0):
-            raise ValueError("timeout must be a non-negative number or None")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                    or not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("timeout must be a finite non-negative number or None")
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._condition:
             while self._size == 0 and not self._closed:
