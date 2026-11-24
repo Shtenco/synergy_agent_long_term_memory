@@ -70,5 +70,56 @@ class MissionRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.append_event("tenant-a","mission-1","bad",{"nan":float("nan")},expected_version=1,idempotency_key="nan")
 
+    def test_concurrent_connections_serialize_optimistic_writers(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        database = Path(self.tmp.name) / "missions.sqlite"
+        barrier = threading.Barrier(2)
+
+        def writer(key):
+            with MissionStore(database) as independent:
+                barrier.wait(timeout=2)
+                try:
+                    independent.append_event(
+                        "tenant-a", "mission-1", "task.started", {"writer": key},
+                        expected_version=1, idempotency_key=key,
+                    )
+                    return "committed"
+                except MissionConflictError:
+                    return "conflict"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(writer, ("writer-a", "writer-b")))
+
+        self.assertCountEqual(outcomes, ["committed", "conflict"])
+        self.assertEqual(self.store.get_mission("tenant-a", "mission-1").version, 2)
+        self.assertEqual(len(self.store.events("tenant-a", "mission-1")), 2)
+
+    def test_idempotent_retry_survives_connection_reopen(self):
+        first = self.store.append_event(
+            "tenant-a", "mission-1", "tool.completed", {"exit_code": 0},
+            expected_version=1, idempotency_key="stable-tool-result",
+        )
+        self.store.close()
+        with MissionStore(Path(self.tmp.name) / "missions.sqlite") as reopened:
+            retry = reopened.append_event(
+                "tenant-a", "mission-1", "tool.completed", {"exit_code": 0},
+                expected_version=1, idempotency_key="stable-tool-result",
+            )
+            self.assertEqual((retry.event_id, retry.sequence), (first.event_id, first.sequence))
+            self.assertEqual(reopened.get_mission("tenant-a", "mission-1").version, 2)
+
+    def test_malformed_status_and_empty_checkpoint_id_are_rejected(self):
+        with self.assertRaises(ValueError):
+            self.store.append_event(
+                "tenant-a", "mission-1", "bad.status", {}, expected_version=1,
+                idempotency_key="bad-status", status=[],
+            )
+        with self.assertRaises(ValueError):
+            self.store.checkpoint(
+                "tenant-a", "mission-1", {}, expected_version=1, checkpoint_id="",
+            )
+
 if __name__ == "__main__":
     unittest.main()
