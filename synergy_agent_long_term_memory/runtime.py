@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-_SCHEMA = 1
+_SCHEMA = 2
 _MAX_NAMESPACE = 160
 _MAX_ID = 160
 _MAX_EVENT_TYPE = 120
@@ -23,6 +23,7 @@ _MAX_PAYLOAD_BYTES = 1_048_576
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 _ALLOWED_STATUS = {"queued", "running", "waiting", "succeeded", "failed", "cancelled"}
+_ALLOWED_TRANSITIONS = {"queued": {"running", "failed", "cancelled"}, "running": {"waiting", "succeeded", "failed", "cancelled"}, "waiting": {"running", "failed", "cancelled"}}
 
 class MissionError(RuntimeError):
     """Base class for mission runtime errors."""
@@ -66,6 +67,7 @@ class MissionEvent:
     sequence: int
     event_id: str
     event_type: str
+    status_after: str
     payload: Any
     payload_sha256: str
     idempotency_key: str
@@ -91,7 +93,7 @@ class MissionStore:
         if isinstance(busy_timeout_ms, bool) or not isinstance(busy_timeout_ms, int) or not 0 <= busy_timeout_ms <= 120_000:
             raise ValueError("busy_timeout_ms must be an integer from 0 to 120000")
         self.database = str(database)
-        self.conn = sqlite3.connect(self.database, timeout=busy_timeout_ms / 1000, isolation_level=None, check_same_thread=False)
+        self.conn = sqlite3.connect(self.database, timeout=busy_timeout_ms / 1000, isolation_level=None, check_same_thread=True)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
         self.conn.execute("PRAGMA foreign_keys=ON")
@@ -116,7 +118,7 @@ class MissionStore:
           updated_at REAL NOT NULL, PRIMARY KEY(namespace, mission_id));
         CREATE TABLE IF NOT EXISTS mission_events(
           namespace TEXT NOT NULL, mission_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK(sequence > 0),
-          event_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL, payload_json TEXT NOT NULL,
+          event_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL, status_after TEXT NOT NULL, payload_json TEXT NOT NULL,
           payload_sha256 TEXT NOT NULL, idempotency_key TEXT NOT NULL, created_at REAL NOT NULL,
           PRIMARY KEY(namespace, mission_id, sequence),
           UNIQUE(namespace, mission_id, idempotency_key),
@@ -131,6 +133,12 @@ class MissionStore:
         CREATE INDEX IF NOT EXISTS idx_checkpoints_recent ON mission_checkpoints(namespace, mission_id, event_sequence DESC);
         """)
         version = self.conn.execute("SELECT version FROM schema_meta WHERE singleton=1").fetchone()[0]
+        if version == 1:
+            columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(mission_events)")}
+            if "status_after" not in columns:
+                self.conn.execute("ALTER TABLE mission_events ADD COLUMN status_after TEXT NOT NULL DEFAULT 'queued'")
+            self.conn.execute("UPDATE schema_meta SET version=2 WHERE singleton=1")
+            version = 2
         if version != _SCHEMA:
             raise RuntimeError(f"unsupported mission database schema version: {version}")
 
@@ -144,8 +152,11 @@ class MissionStore:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             self.conn.execute("INSERT INTO missions VALUES(?, ?, 'queued', 0, ?, ?)", (namespace, mission_id, now, now))
-            self.conn.execute("INSERT INTO mission_events VALUES(?, ?, 1, ?, 'mission.created', ?, ?, 'mission.created', ?)",
-                              (namespace, mission_id, str(uuid.uuid4()), payload, _digest(payload), now))
+            self.conn.execute("""INSERT INTO mission_events
+                (namespace, mission_id, sequence, event_id, event_type, status_after,
+                 payload_json, payload_sha256, idempotency_key, created_at)
+                VALUES(?, ?, 1, ?, 'mission.created', 'queued', ?, ?, 'mission.created', ?)""",
+                (namespace, mission_id, str(uuid.uuid4()), payload, _digest(payload), now))
             self.conn.execute("UPDATE missions SET version=1 WHERE namespace=? AND mission_id=?", (namespace, mission_id))
             self.conn.commit()
         except Exception:
@@ -180,7 +191,8 @@ class MissionStore:
             existing = self.conn.execute("SELECT * FROM mission_events WHERE namespace=? AND mission_id=? AND idempotency_key=?",
                                          (namespace, mission_id, idempotency_key)).fetchone()
             if existing is not None:
-                if existing["event_type"] != event_type or existing["payload_json"] != payload_json:
+                if (existing["event_type"] != event_type or existing["payload_json"] != payload_json
+                        or (status is not None and existing["status_after"] != status)):
                     raise MissionConflictError("idempotency key reused with different event data")
                 self.conn.commit()
                 return self._event(existing)
@@ -192,15 +204,23 @@ class MissionStore:
                 raise MissionConflictError("mission version changed; reload before appending")
             if mission["status"] in _TERMINAL:
                 raise MissionConflictError("terminal mission cannot accept new events")
+            next_status = status or mission["status"]
+            if next_status != mission["status"] and next_status not in _ALLOWED_TRANSITIONS[mission["status"]]:
+                raise MissionConflictError(f"invalid mission status transition: {mission['status']} -> {next_status}")
             sequence, now, event_id = mission["version"] + 1, time.time(), str(uuid.uuid4())
-            self.conn.execute("INSERT INTO mission_events VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                              (namespace, mission_id, sequence, event_id, event_type, payload_json, payload_hash, idempotency_key, now))
+            self.conn.execute("""INSERT INTO mission_events
+                (namespace, mission_id, sequence, event_id, event_type, status_after,
+                 payload_json, payload_sha256, idempotency_key, created_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (namespace, mission_id, sequence, event_id, event_type, next_status,
+                 payload_json, payload_hash, idempotency_key, now))
             self.conn.execute("UPDATE missions SET status=?, version=?, updated_at=? WHERE namespace=? AND mission_id=? AND version=?",
-                              (status or mission["status"], sequence, now, namespace, mission_id, expected_version))
+                              (next_status, sequence, now, namespace, mission_id, expected_version))
             if self.conn.execute("SELECT changes()").fetchone()[0] != 1:
                 raise MissionConflictError("concurrent mission update")
             self.conn.commit()
-            return MissionEvent(namespace, mission_id, sequence, event_id, event_type, json.loads(payload_json), payload_hash, idempotency_key, now)
+            return MissionEvent(namespace, mission_id, sequence, event_id, event_type, next_status,
+                                json.loads(payload_json), payload_hash, idempotency_key, now)
         except Exception:
             self.conn.rollback()
             raise
@@ -222,7 +242,8 @@ class MissionStore:
         if not _SHA256_RE.fullmatch(row["payload_sha256"]) or _digest(raw) != row["payload_sha256"]:
             raise MissionIntegrityError("event payload digest mismatch")
         return MissionEvent(row["namespace"], row["mission_id"], row["sequence"], row["event_id"],
-                            row["event_type"], json.loads(raw), row["payload_sha256"], row["idempotency_key"], row["created_at"])
+                            row["event_type"], row["status_after"], json.loads(raw), row["payload_sha256"],
+                            row["idempotency_key"], row["created_at"])
 
     def checkpoint(self, namespace: str, mission_id: str, state: Any, *, expected_version: int,
                    checkpoint_id: str | None = None) -> Checkpoint:
