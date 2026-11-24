@@ -29,6 +29,7 @@ class MissionRuntimeTests(unittest.TestCase):
         first = self.store.append_event(**kw)
         retry = self.store.append_event(**kw)
         self.assertEqual((first.event_id, first.sequence), (retry.event_id, retry.sequence))
+        self.assertEqual(retry.status_after, "queued")
     def test_idempotency_key_cannot_change_payload(self):
         self.store.append_event("tenant-a","mission-1","tool.completed",{"exit_code":0},expected_version=1,idempotency_key="tool")
         with self.assertRaises(MissionConflictError):
@@ -45,9 +46,14 @@ class MissionRuntimeTests(unittest.TestCase):
         with self.assertRaises(MissionConflictError):
             self.store.checkpoint("tenant-a","mission-1",{},expected_version=1)
     def test_terminal_mission_rejects_writes(self):
-        self.store.append_event("tenant-a","mission-1","mission.completed",{},expected_version=1,idempotency_key="done",status="succeeded")
+        self.store.append_event("tenant-a","mission-1","mission.started",{},expected_version=1,idempotency_key="start",status="running")
+        completed = self.store.append_event("tenant-a","mission-1","mission.completed",{},expected_version=2,idempotency_key="done",status="succeeded")
+        self.assertEqual(completed.status_after, "succeeded")
         with self.assertRaises(MissionConflictError):
-            self.store.append_event("tenant-a","mission-1","late.event",{},expected_version=2,idempotency_key="late")
+            self.store.append_event("tenant-a","mission-1","late.event",{},expected_version=3,idempotency_key="late")
+    def test_invalid_status_transition_is_rejected(self):
+        with self.assertRaises(MissionConflictError):
+            self.store.append_event("tenant-a","mission-1","mission.completed",{},expected_version=1,idempotency_key="skip",status="succeeded")
     def test_event_tampering_detected(self):
         self.store.append_event("tenant-a","mission-1","task.started",{"task":"t"},expected_version=1,idempotency_key="start")
         self.store.conn.execute("UPDATE mission_events SET payload_json='{}' WHERE sequence=2")
