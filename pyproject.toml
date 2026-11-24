@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synergy-agent-long-term-memory"
+version = "0.1.0"
+description = "Persistent, namespace-scoped mission journal and checkpoint runtime for SYNERGY agents"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools]
+packages = ["synergy_agent_long_term_memory"]
