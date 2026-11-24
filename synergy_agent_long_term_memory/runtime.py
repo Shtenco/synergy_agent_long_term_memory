@@ -144,7 +144,9 @@ class MissionStore:
 
     def create_mission(self, namespace: str, *, mission_id: str | None = None, initial_state: Mapping[str, Any] | None = None) -> Mission:
         namespace = _text(namespace, "namespace", _MAX_NAMESPACE)
-        mission_id = _text(mission_id or str(uuid.uuid4()), "mission_id", _MAX_ID)
+        mission_id = _text(str(uuid.uuid4()) if mission_id is None else mission_id, "mission_id", _MAX_ID)
+        if initial_state is not None and not isinstance(initial_state, Mapping):
+            raise ValueError("initial_state must be a mapping or None")
         payload = canonical_json({} if initial_state is None else dict(initial_state))
         if len(payload.encode()) > _MAX_PAYLOAD_BYTES:
             raise ValueError("initial_state exceeds payload limit")
@@ -202,6 +204,8 @@ class MissionStore:
                 raise MissionNotFoundError("mission not found in namespace")
             if mission["version"] != expected_version:
                 raise MissionConflictError("mission version changed; reload before appending")
+            if mission["status"] not in _ALLOWED_STATUS:
+                raise MissionIntegrityError("persisted mission status is invalid")
             if mission["status"] in _TERMINAL:
                 raise MissionConflictError("terminal mission cannot accept new events")
             next_status = status or mission["status"]
@@ -270,7 +274,7 @@ class MissionStore:
         except Exception:
             self.conn.rollback()
             raise
-        return Checkpoint(namespace, mission_id, checkpoint_id, expected_version, state, digest, now)
+        return Checkpoint(namespace, mission_id, checkpoint_id, expected_version, json.loads(raw), digest, now)
 
     def restore_checkpoint(self, namespace: str, mission_id: str, checkpoint_id: str) -> Checkpoint:
         namespace = _text(namespace, "namespace", _MAX_NAMESPACE)
