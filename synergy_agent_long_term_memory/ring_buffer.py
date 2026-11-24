@@ -6,6 +6,7 @@ Durable recovery must use MissionStore checkpoints and the event journal.
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Generic, TypeVar
@@ -15,6 +16,10 @@ T = TypeVar("T")
 
 class BufferFullError(RuntimeError):
     """The bounded buffer is full and the caller selected non-blocking behavior."""
+
+
+class BufferEmptyError(RuntimeError):
+    """The buffer is empty and the caller selected non-blocking behavior."""
 
 
 class BufferClosedError(RuntimeError):
@@ -30,8 +35,8 @@ class AgentRingBuffer(Generic[T]):
     """
 
     def __init__(self, capacity: int) -> None:
-        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
-            raise ValueError("capacity must be a positive integer")
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or not 1 <= capacity <= 1_000_000:
+            raise ValueError("capacity must be an integer from 1 to 1000000")
         self.capacity = capacity
         self._slots: list[T | None] = [None] * capacity
         self._head = 0
@@ -51,8 +56,9 @@ class AgentRingBuffer(Generic[T]):
     def put(self, item: T, *, block: bool = True, timeout: float | None = None) -> None:
         if item is None:
             raise ValueError("None is reserved and cannot be buffered")
-        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0):
-            raise ValueError("timeout must be a non-negative number or None")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                    or not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("timeout must be a finite non-negative number or None")
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._condition:
             while self._size == self.capacity and not self._closed:
@@ -76,10 +82,10 @@ class AgentRingBuffer(Generic[T]):
         with self._condition:
             while self._size == 0 and not self._closed:
                 if not block:
-                    raise BufferFullError("agent ring buffer is empty")
+                    raise BufferEmptyError("agent ring buffer is empty")
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
-                    raise BufferFullError("timed out waiting for a ring buffer item")
+                    raise BufferEmptyError("timed out waiting for a ring buffer item")
                 self._condition.wait(remaining)
             if self._size == 0:
                 raise BufferClosedError("agent ring buffer is closed and drained")
