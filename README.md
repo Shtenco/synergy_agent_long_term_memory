@@ -37,7 +37,7 @@ Persistent mission orchestration primitives for long-running agents. This reposi
 - AI Coder owns repository worktrees, patches, command policy, test evidence, review contracts, and release candidates.
 - Ring Buffer owns bounded low-latency recent-event windows. It is not the durable source of truth; a full buffer blocks or raises instead of silently overwriting unconsumed entries.
 
-The shared integration envelope should carry namespace, mission_id, agent_id, repository_id, task_id, event_id, sequence, memory_version, checkpoint_id, commit_sha, and evidence references. Unknown schema versions must be rejected.
+The shared integration envelope is EngineeringStateTransition v1. It carries namespace, mission_id, agent_id, repository_id, task_id, event_id, sequence, memory_version, checkpoint_id, commit_sha, and evidence references. Unknown schema versions, extra fields, invalid Git SHAs, duplicate evidence references, and malformed identifiers are rejected.
 
 ## Security and correctness boundaries
 
