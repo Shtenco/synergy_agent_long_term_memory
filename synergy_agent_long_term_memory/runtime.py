@@ -182,7 +182,7 @@ class MissionStore:
         idempotency_key = _text(idempotency_key, "idempotency_key", _MAX_ID)
         if isinstance(expected_version, bool) or not isinstance(expected_version, int) or expected_version < 0:
             raise ValueError("expected_version must be a non-negative integer")
-        if status is not None and status not in _ALLOWED_STATUS:
+        if status is not None and (not isinstance(status, str) or status not in _ALLOWED_STATUS):
             raise ValueError("invalid mission status")
         payload_json = canonical_json(payload)
         if len(payload_json.encode()) > _MAX_PAYLOAD_BYTES:
@@ -258,7 +258,7 @@ class MissionStore:
         raw = canonical_json(state)
         if len(raw.encode()) > _MAX_PAYLOAD_BYTES:
             raise ValueError("checkpoint state exceeds payload limit")
-        checkpoint_id = _text(checkpoint_id or str(uuid.uuid4()), "checkpoint_id", _MAX_ID)
+        checkpoint_id = _text(str(uuid.uuid4()) if checkpoint_id is None else checkpoint_id, "checkpoint_id", _MAX_ID)
         digest, now = _digest(raw), time.time()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
